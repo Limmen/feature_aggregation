@@ -6,7 +6,7 @@ from pomdp_util import POMDPUtil
 import time
 
 if __name__ == '__main__':
-    pomdp = POMDPParser.parse_pomdp(file_path="RockSample_4_4.pomdp")
+    pomdp = POMDPParser.parse_pomdp(file_path="RockSample_5_7.pomdp")
     print(len(pomdp.X))
     print(len(pomdp.A))
     print(len(pomdp.O))

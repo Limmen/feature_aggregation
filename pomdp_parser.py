@@ -1,23 +1,34 @@
+#!/usr/bin/env python3
 """
 parse_pomdp.py
 
 An extended parser for .POMDP files that:
-  - Collects the usual fields (discount, states, actions, observations).
-  - Stores T/O/R in dict-of-dicts-of-dicts form.
-  - Also builds 0-indexed tensors T, Z, and R (nested lists).
-  - Provides X (the list of valid state indices),
-    O (the list of valid observation indices),
-    plus lookup dicts for states, actions, and observations.
+  - Handles lines like "T: action identity", "T: action uniform", or T-matrices.
+  - Also handles single-line transitions/observations of the form:
+      T: <action> : <state_from> : <state_to> <prob>
+      O: <action> : <state_to> : <observation> <prob>
+  - Parses 'start:' lines to capture the start distribution.
+  - Builds 0-indexed tensors T, Z, and R (nested lists).
+  - Provides X (the list of state indices), A (the list of action indices),
+    O (the list of observation indices), plus lookup dicts for each.
+
+Usage:
+  python parse_pomdp.py file.pomdp
 """
 
 import re
+import sys
+
 
 class POMDPParser:
     """
     A container for POMDP specifications and derived data:
       - discount: float
       - values: typically 'reward'
-      - states, actions, observations: string labels
+      - states: list of state labels
+      - actions: list of action labels
+      - observations: list of observation labels
+      - start_dist: list of floats (start distribution over states; same order as states)
       - transition_probs[action][s_from][s_to]
       - observation_probs[action][s_to][obs]
       - rewards[action][s_from][s_to][obs]
@@ -28,6 +39,7 @@ class POMDPParser:
       - obs_name_to_id,    obs_id_to_name
 
       - X: list of state indices (0..N-1)
+      - A: list of action indices (0..numActions-1)
       - O: list of observation indices (0..M-1)
 
       - T[a][s][s']: transition probabilities (nested lists)
@@ -42,6 +54,9 @@ class POMDPParser:
         self.states = []
         self.actions = []
         self.observations = []
+
+        # Start distribution (parallel to self.states), if given
+        self.start_dist = None
 
         # Dict-based probabilities and rewards
         # e.g. transition_probs[action][state_from][state_to] = prob
@@ -61,8 +76,8 @@ class POMDPParser:
 
         # Numeric sets (lists) of indices
         self.X = []  # states
-        self.O = []  # observations
         self.A = []  # actions
+        self.O = []  # observations
 
         # Tensor-like nested lists
         self.T = []  # T[a][s][s']
@@ -102,10 +117,10 @@ class POMDPParser:
     def parse_pomdp(file_path):
         """
         Parse a .POMDP file and return a POMDP object with:
-          - discount, values, states, actions, observations
+          - discount, values, states, actions, observations, start_dist (if any)
           - transition_probs, observation_probs, rewards (dict-of-dicts)
           - T, Z, R as nested Python lists (indexed from 0)
-          - X, O as the lists [0..num_states-1], [0..num_obs-1]
+          - X, A, O as lists of numeric indices
           - Lookup dicts (state_name_to_id, etc.)
         """
         pomdp = POMDPParser()
@@ -120,17 +135,27 @@ class POMDPParser:
         states_pattern = re.compile(r"^states\s*:\s*(.*)")
         actions_pattern = re.compile(r"^actions\s*:\s*(.*)")
         obs_pattern = re.compile(r"^observations\s*:\s*(.*)")
+        start_pattern = re.compile(r"^start\s*:\s*(.*)")  # e.g. start: 0.25 0.25 0.25 0.25 ...
 
-        # Regex for T/O lines: e.g. T: action ...
+        # Regex for T/O lines in matrix/shorthand form: e.g. "T: action"
         transition_pattern = re.compile(r"^T\s*:\s*([^:]+)(.*)")
         observation_pattern = re.compile(r"^O\s*:\s*([^:]+)(.*)")
 
-        # Regex for R lines: e.g. R: action : s_from : s_to : obs value
+        # Regex for single-line T: action : s_from : s_to <prob>
+        transition_spec_pattern = re.compile(
+            r"^T\s*:\s*([^:]+)\s*:\s*([^:]+)\s*:\s*([^:]+)\s+([\-\d\.]+)\s*$"
+        )
+        # Regex for single-line O: action : s_to : obs <prob>
+        observation_spec_pattern = re.compile(
+            r"^O\s*:\s*([^:]+)\s*:\s*([^:]+)\s*:\s*([^:]+)\s+([\-\d\.]+)\s*$"
+        )
+
+        # Regex for R lines (multi-line spec with wildcards)
         reward_pattern = re.compile(
             r"^R\s*:\s*([^:]+)\s*:\s*([^:]+)\s*:\s*([^:]+)\s*:\s*([^:]+)\s+([-]?\d+(\.\d+)?)"
         )
 
-        # 1) First pass: gather discount, values, states, actions, observations
+        # 1) First pass: gather discount, values, states, actions, observations, start
         i = 0
         while i < len(lines):
             line = lines[i]
@@ -145,7 +170,7 @@ class POMDPParser:
                 continue
 
             if states_pattern.match(line):
-                # e.g. "states: tiger-left tiger-right"
+                # e.g. "states: s0 s1 s2"
                 pomdp.states = states_pattern.match(line).group(1).split()
                 i += 1
                 continue
@@ -157,6 +182,13 @@ class POMDPParser:
 
             if obs_pattern.match(line):
                 pomdp.observations = obs_pattern.match(line).group(1).split()
+                i += 1
+                continue
+
+            if start_pattern.match(line):
+                # e.g. start: 0.25 0.25 0.25 0.25
+                start_str = start_pattern.match(line).group(1).strip()
+                pomdp.start_dist = [float(x) for x in start_str.split()]
                 i += 1
                 continue
 
@@ -172,19 +204,49 @@ class POMDPParser:
         while i < len(lines):
             line = lines[i]
 
-            # --- Transition lines ---
+            # --- Single-line transitions: T: action : s_from : s_to prob ---
+            tm_single = transition_spec_pattern.match(line)
+            if tm_single:
+                action = tm_single.group(1).strip()
+                s_from = tm_single.group(2).strip()
+                s_to = tm_single.group(3).strip()
+                prob = float(tm_single.group(4))
+
+                pomdp.transition_probs[action][s_from][s_to] = prob
+
+                i += 1
+                continue
+
+            # --- Single-line observations: O: action : s_to : obs prob ---
+            om_single = observation_spec_pattern.match(line)
+            if om_single:
+                action = om_single.group(1).strip()
+                s_to = om_single.group(2).strip()
+                obs = om_single.group(3).strip()
+                prob = float(om_single.group(4))
+
+                pomdp.observation_probs[action][s_to][obs] = prob
+
+                i += 1
+                continue
+
+            # --- Transition lines in matrix/shorthand style ---
             tm = transition_pattern.match(line)
             if tm:
+                # e.g. T: amn  -> we might have 'identity' / 'uniform' / a matrix next line(s).
                 action = tm.group(1).strip()
                 suffix = tm.group(2).strip()  # could be 'identity', 'uniform', or empty
 
-                if not suffix:  # maybe on next line
+                # If suffix is empty, maybe look at the next line for identity/uniform/matrix
+                if not suffix:
                     if i + 1 < len(lines):
                         next_line = lines[i + 1].strip()
                         if next_line.startswith('identity'):
                             for s_from in pomdp.states:
                                 for s_to in pomdp.states:
-                                    pomdp.transition_probs[action][s_from][s_to] = 1.0 if s_from == s_to else 0.0
+                                    pomdp.transition_probs[action][s_from][s_to] = (
+                                        1.0 if s_from == s_to else 0.0
+                                    )
                             i += 2
                             continue
                         elif next_line.startswith('uniform'):
@@ -194,10 +256,17 @@ class POMDPParser:
                                     pomdp.transition_probs[action][s_from][s_to] = 1.0 / nS
                             i += 2
                             continue
-                    # Otherwise, assume a matrix follows
+                    # Otherwise, parse a matrix
                     i += 1
                     for s_index, s_from in enumerate(pomdp.states):
+                        if i >= len(lines):
+                            break
                         prob_line = lines[i].split()
+                        # If we encounter something that doesn't look like a row of floats,
+                        # we break. (But you can handle differently if needed.)
+                        if not re.match(r"^[\-\d\. ]+$", lines[i]):
+                            # Means we've bumped into something else (maybe O:?), so break.
+                            break
                         i += 1
                         for t_index, s_to in enumerate(pomdp.states):
                             pomdp.transition_probs[action][s_from][s_to] = float(prob_line[t_index])
@@ -218,16 +287,20 @@ class POMDPParser:
                     i += 1
                     continue
                 else:
-                    # parse matrix
+                    # parse matrix in subsequent lines
                     i += 1
                     for s_index, s_from in enumerate(pomdp.states):
+                        if i >= len(lines):
+                            break
                         prob_line = lines[i].split()
+                        if not re.match(r"^[\-\d\. ]+$", lines[i]):
+                            break
                         i += 1
                         for t_index, s_to in enumerate(pomdp.states):
                             pomdp.transition_probs[action][s_from][s_to] = float(prob_line[t_index])
                     continue
 
-            # --- Observation lines ---
+            # --- Observation lines in matrix/shorthand style ---
             om = observation_pattern.match(line)
             if om:
                 action = om.group(1).strip()
@@ -252,13 +325,17 @@ class POMDPParser:
                     # parse matrix
                     i += 1
                     for s_index, s_to in enumerate(pomdp.states):
+                        if i >= len(lines):
+                            break
                         prob_line = lines[i].split()
+                        if not re.match(r"^[\-\d\. ]+$", lines[i]):
+                            break
                         i += 1
                         for o_index, obs in enumerate(pomdp.observations):
                             pomdp.observation_probs[action][s_to][obs] = float(prob_line[o_index])
                     continue
 
-                # suffix on same line
+                # suffix on the same line
                 if suffix.startswith('identity'):
                     for s_to in pomdp.states:
                         for obs in pomdp.observations:
@@ -276,13 +353,17 @@ class POMDPParser:
                     # parse matrix
                     i += 1
                     for s_index, s_to in enumerate(pomdp.states):
+                        if i >= len(lines):
+                            break
                         prob_line = lines[i].split()
+                        if not re.match(r"^[\-\d\. ]+$", lines[i]):
+                            break
                         i += 1
                         for o_index, obs in enumerate(pomdp.observations):
                             pomdp.observation_probs[action][s_to][obs] = float(prob_line[o_index])
                     continue
 
-            # --- Reward lines ---
+            # --- Reward lines (supports wildcards) ---
             rm = reward_pattern.match(line)
             if rm:
                 action = rm.group(1).strip()
@@ -303,23 +384,23 @@ class POMDPParser:
                 i += 1
                 continue
 
+            # If we reach here, we haven't matched T, O, or R lines. Just move on.
             i += 1
 
         # 3) Build numeric index lookups (state, action, obs)
-        pomdp.state_name_to_id = {s_name: i for i, s_name in enumerate(pomdp.states)}
-        pomdp.state_id_to_name = {i: s_name for i, s_name in enumerate(pomdp.states)}
+        pomdp.state_name_to_id = {s_name: idx for idx, s_name in enumerate(pomdp.states)}
+        pomdp.state_id_to_name = {idx: s_name for idx, s_name in enumerate(pomdp.states)}
 
-        pomdp.action_name_to_id = {a_name: i for i, a_name in enumerate(pomdp.actions)}
-        pomdp.action_id_to_name = {i: a_name for i, a_name in enumerate(pomdp.actions)}
+        pomdp.action_name_to_id = {a_name: idx for idx, a_name in enumerate(pomdp.actions)}
+        pomdp.action_id_to_name = {idx: a_name for idx, a_name in enumerate(pomdp.actions)}
 
-        pomdp.obs_name_to_id = {o_name: i for i, o_name in enumerate(pomdp.observations)}
-        pomdp.obs_id_to_name = {i: o_name for i, o_name in enumerate(pomdp.observations)}
+        pomdp.obs_name_to_id = {o_name: idx for idx, o_name in enumerate(pomdp.observations)}
+        pomdp.obs_id_to_name = {idx: o_name for idx, o_name in enumerate(pomdp.observations)}
 
-
-        # 4) Create X, O as the lists of numeric indices
-        pomdp.X = list(range(len(pomdp.states)))  # e.g., [0,1,2,...]
-        pomdp.O = list(range(len(pomdp.observations)))  # e.g., [0,1,2,...]
-        pomdp.A = list(range(len(pomdp.actions)))
+        # 4) Create X, A, O as the lists of numeric indices
+        pomdp.X = list(range(len(pomdp.states)))  # e.g., [0,1,...]
+        pomdp.A = list(range(len(pomdp.actions)))  # e.g., [0,1,...]
+        pomdp.O = list(range(len(pomdp.observations)))  # e.g., [0,1,...]
 
         # 5) Construct T, Z, R as nested lists
         numA = len(pomdp.actions)
@@ -358,22 +439,25 @@ class POMDPParser:
 
         # Fill T, Z, R using the dictionary-based data
         for a_name in pomdp.actions:
-            a = pomdp.action_name_to_id[a_name]
+            a_id = pomdp.action_name_to_id[a_name]
             for s_from in pomdp.states:
                 sf = pomdp.state_name_to_id[s_from]
                 for s_to in pomdp.states:
                     st = pomdp.state_name_to_id[s_to]
-                    pomdp.T[a][sf][st] = pomdp.transition_probs[a_name][s_from][s_to]
-                    for o_name in pomdp.observations:
-                        o = pomdp.obs_name_to_id[o_name]
-                        pomdp.Z[a][st][o] = pomdp.observation_probs[a_name][s_to][o_name]
-                        pomdp.R[a][sf][st][o] = pomdp.rewards[a_name][s_from][s_to][o_name]
+                    # Transition
+                    pomdp.T[a_id][sf][st] = pomdp.transition_probs[a_name][s_from][s_to]
+                    for obs in pomdp.observations:
+                        o_id = pomdp.obs_name_to_id[obs]
+                        # Observation
+                        pomdp.Z[a_id][st][o_id] = pomdp.observation_probs[a_name][s_to][obs]
+                        # Reward
+                        pomdp.R[a_id][sf][st][o_id] = pomdp.rewards[a_name][s_from][s_to][obs]
 
         return pomdp
 
 
 def main(file_path):
-    pomdp = POMDPParser.parse_pomdp(file_path)
+    pomdp = parse_pomdp(file_path)
 
     # Print some info
     print("Parsed POMDP specification:")
@@ -382,6 +466,8 @@ def main(file_path):
     print(f"  States:       {pomdp.states}")
     print(f"  Actions:      {pomdp.actions}")
     print(f"  Observations: {pomdp.observations}")
+    if pomdp.start_dist is not None:
+        print(f"  Start Dist:   {pomdp.start_dist}")
 
     print("\nIndex Lookups:")
     print("  state_name_to_id:", pomdp.state_name_to_id)
@@ -392,34 +478,35 @@ def main(file_path):
     print("  obs_id_to_name:", pomdp.obs_id_to_name)
 
     print("\nX (state indices):", pomdp.X)
+    print("A (action indices):", pomdp.A)
     print("O (observation indices):", pomdp.O)
 
     # Example printing of a few elements in T, Z, R
-    print("\nSample from T[a][s][s'] (transition):")
+    print("\nSample from T[a][s][s'] (non-zero transitions):")
     for a in range(len(pomdp.actions)):
         for s in range(len(pomdp.states)):
             for s2 in range(len(pomdp.states)):
                 val = pomdp.T[a][s][s2]
-                if val > 0:
+                if val != 0.0:
                     print(f"T[{a}][{s}][{s2}] = {val}")
 
-    print("\nSample from Z[a][s'][o] (observation):")
+    print("\nSample from Z[a][s'][o] (non-zero observations):")
     for a in range(len(pomdp.actions)):
         for s2 in range(len(pomdp.states)):
             for o in range(len(pomdp.observations)):
                 val = pomdp.Z[a][s2][o]
-                if val > 0:
+                if val != 0.0:
                     print(f"Z[{a}][{s2}][{o}] = {val}")
 
-    print("\nSample from R[a][s][s'][o] (rewards):")
+    print("\nSample from R[a][s][s'][o] (non-zero rewards):")
     for a in range(len(pomdp.actions)):
         for s in range(len(pomdp.states)):
             for s2 in range(len(pomdp.states)):
                 for o in range(len(pomdp.observations)):
                     val = pomdp.R[a][s][s2][o]
-                    if val != 0:
+                    if val != 0.0:
                         print(f"R[{a}][{s}][{s2}][{o}] = {val}")
 
 
 if __name__ == "__main__":
-    main(file_path="tiger.pomdp")
+    main("./tiger.pomdp")
