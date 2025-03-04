@@ -1,22 +1,21 @@
 from csle_tolerance.util.pomdp_solve_parser import PomdpSolveParser
 import numpy as np
-from pomdp_parser import POMDPParser
 from value_iteration import VI
 from pomdp_util import POMDPUtil
 import time
 
 if __name__ == '__main__':
+    data = np.load("tiger.npz")
+    X = data["X"]
+    O = data["O"]
+    Z = data["Z"]
+    C = data["C"]
+    P = data["P"]
+    U = data["U"]
+    b0 = data["b0"]
     alpha_vectors = PomdpSolveParser.parse_alpha_vectors(file_path="tiger.alpha")
-    b0 = [0.5, 0.5]
     val = np.min([np.dot(b0, list(-np.array(alpha[1]))) for alpha in alpha_vectors])
     print(val)
-    pomdp = POMDPParser.parse_pomdp(file_path="tiger.pomdp")
-    X = pomdp.X
-    O = pomdp.O
-    Z = pomdp.Z
-    C = list(-np.array(pomdp.R))
-    P = pomdp.T
-    U = pomdp.A
     gamma = 0.95
     n = 4
     epsilon = 0.001

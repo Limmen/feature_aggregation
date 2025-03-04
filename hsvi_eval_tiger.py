@@ -1,7 +1,6 @@
 import json
 import re
 
-
 def parse_pomdp_policy(file_path: str) -> dict:
     """
     Parses a policy text (which uses => instead of :) into a Python dictionary.
@@ -123,3 +122,12 @@ def evaluate_pomdp_policy(policy: dict, belief: list[float]) -> (float, int):
             best_action = plane["action"]
 
     return best_value, best_action
+
+
+if __name__ == "__main__":
+    policy_dict = parse_pomdp_policy("tiger.hsvi")
+    belief_example = [0.5, 0.5]
+    value, action = evaluate_pomdp_policy(policy_dict, belief_example)
+    print(f"\nBelief: {belief_example}")
+    print(f"Best value:  {value}")
+    print(f"Best action: {action}")

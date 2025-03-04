@@ -53,10 +53,22 @@ class POMDPUtil:
     @staticmethod
     def B_n(n, X):
         """
-        Creates the aggregate belief space B_n, where n is the resolution
+        Creates the aggregate belief space B_n, where n is the resolution.
+        Optimized to generate only valid combinations directly.
         """
-        combinations = [k for k in itertools.product(range(n + 1), repeat=len(X)) if sum(k) == n]
-        belief_points = [list(float(k_i / n) for k_i in k) for k in combinations]
+        def generate_compositions(n, k):
+            """Generates compositions of n into k parts (weak compositions)."""
+            for indices in itertools.combinations_with_replacement(range(k), n):
+                composition = [0] * k
+                for index in indices:
+                    composition[index] += 1
+                yield composition
+        belief_points = []
+        total_combinations = math.comb(n + len(X) - 1, len(X) - 1)  # Number of compositions
+        for i, k in enumerate(generate_compositions(n, len(X))):
+            belief = [k_i / n for k_i in k]
+            belief_points.append(belief)
+            print(f"Processing belief {i + 1}/{total_combinations}: {belief}")
         return belief_points
 
     @staticmethod
@@ -74,8 +86,9 @@ class POMDPUtil:
         belief_C = list(np.zeros((len(B_n), len(U))).tolist())
         for u in U:
             for z in O:
-                for b in B_n:
-                    belief_C[B_n.index(b)][u] = POMDPUtil.expected_cost(b=b, u=u, C=C, X=X, z=z, P=P)
+                for i, b in enumerate(B_n):
+                    print(f"Processing C_b {u}/{len(U) - 1} {z}/{len(O)-1} {i}/{len(B_n)}")
+                    belief_C[i][u] = POMDPUtil.expected_cost(b=b, u=u, C=C, X=X, z=z, P=P)
         return belief_C
 
     @staticmethod
@@ -100,9 +113,10 @@ class POMDPUtil:
         """
         belief_T = list(np.zeros((len(U), len(B_n), len(B_n))).tolist())
         for u in U:
-            for b1 in B_n:
-                for b2 in B_n:
-                    belief_T[u][B_n.index(b1)][B_n.index(b2)] = \
+            for i, b1 in enumerate(B_n):
+                for j, b2 in enumerate(B_n):
+                    print(f"Processing P_b {u}/{len(U) - 1} {i}/{len(B_n)} {j}/{len(B_n)}")
+                    belief_T[u][i][j] = \
                         POMDPUtil.P_b2_b1_u(b1=b1, b2=b2, u=u, X=X, O=O, P=P, Z=Z, B_n=B_n)
         return belief_T
 
