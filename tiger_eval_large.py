@@ -1,3 +1,5 @@
+from csle_tolerance.util.pomdp_solve_parser import PomdpSolveParser
+import numpy as np
 from value_iteration import VI
 from pomdp_util import POMDPUtil
 import time
@@ -5,9 +7,9 @@ from large_pomdp_parser import SparseRowO, SparseRowT
 from large_pomdp_parser import load_model
 
 if __name__ == '__main__':
-    model = load_model("rocksample_4_4.pkl")
+    model = load_model("tiger_model.pkl")
     gamma = 0.95
-    n = 1
+    n = 4
     epsilon = 0.001
     X = list(model["state_index"].values())
     U = list(model["action_index"].values())
@@ -22,6 +24,6 @@ if __name__ == '__main__':
     start = time.time()
     mu, J = VI.vi(P=P_b, epsilon=epsilon, gamma=gamma, C=C_b, X=B_n_indices, U=U, verbose=False)
     end = time.time()
-    avg_cost = POMDPUtil.policy_evaluation(L=10000, mu=mu, gamma=gamma, b0=b0, model=model, X=X, N=100, B_n=B_n)
+    avg_cost = POMDPUtil.policy_evaluation(L=10000, mu=mu, gamma=gamma, b0=b_0_n, model=model, X=X, N=100, B_n=B_n, O=O)
     print(avg_cost)
     print(end-start)

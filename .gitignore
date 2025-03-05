@@ -85,3 +85,4 @@ Thumbs.db
 ehthumbs.db
 
 *.npz
+*.pkl

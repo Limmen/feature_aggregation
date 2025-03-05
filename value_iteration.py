@@ -34,8 +34,8 @@ class VI:
         """
         Q_x = np.zeros(len(U))
         for u in U:
-            for x_prime in X:
-                Q_x[u] += P[u][x][x_prime] * (C[x][u] + gamma * J[x_prime])
+            for (x_prime, b_p) in P[u][x]:
+                Q_x[u] += b_p * (C[x][u] + gamma * J[x_prime])
         u_star = int(np.argmin(Q_x))
         return u_star, Q_x[u_star]
 
