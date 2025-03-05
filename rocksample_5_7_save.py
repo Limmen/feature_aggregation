@@ -1,19 +1,5 @@
-from pomdp_parser import POMDPParser
-import numpy as np
+from large_pomdp_parser import parse_pomdp_data, save_model, sample_next_state_and_obs
 
 if __name__ == '__main__':
-    pomdp = POMDPParser.parse_pomdp(file_path="RockSample_5_7.pomdp")
-    X = pomdp.X
-    O = pomdp.O
-    Z = pomdp.Z
-    C = list(-np.array(pomdp.R))
-    P = pomdp.T
-    U = pomdp.A
-    b0 = pomdp.start_dist
-    X_arr = np.array(X)
-    O_arr = np.array(O)
-    Z_arr = np.array(Z)
-    C_arr = np.array(C)
-    P_arr = np.array(P)
-    U_arr = np.array(U)
-    np.savez("rocksample_5_7.npz", X=X_arr, O=O_arr, Z=Z_arr, C=C_arr, P=P_arr, U=U_arr, b0=b0)
+    parsed_model = parse_pomdp_data("RockSample_5_7.pomdp")
+    save_model(parsed_model, "rocksample_5_7.pkl")

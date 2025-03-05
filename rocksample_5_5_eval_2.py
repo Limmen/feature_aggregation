@@ -8,9 +8,9 @@ from large_pomdp_parser import load_model
 import numpy as np
 
 if __name__ == '__main__':
-    model = load_model("rocksample_5_7.pkl")
+    model = load_model("rocksample_5_5.pkl")
     gamma = 0.95
-    n = 1
+    n = 2
     epsilon = 0.001
     X = list(model["state_index"].values())
     U = list(model["action_index"].values())

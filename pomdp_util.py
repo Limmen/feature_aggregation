@@ -6,6 +6,7 @@ from collections import deque
 from large_pomdp_parser import get_next_state_obs_pairs, get_successor_states, sample_next_state_and_obs
 from collections import defaultdict
 from scipy.stats import qmc
+from annoy import AnnoyIndex
 
 
 class POMDPUtil:
@@ -20,25 +21,6 @@ class POMDPUtil:
         """
         Computes the next belief b' after observing z in POMDP,
         given the prior belief b and action u.
-
-        Parameters
-        ----------
-        z : int
-            The observation index just received.
-        u : int
-            The action index taken.
-        b : list or np.array
-            The current belief distribution over states (length=len(X)).
-        X : list or range of states (used for indexing).
-        model : dict
-            The parsed POMDP model, which includes:
-              - model["Z"][u].get_prob(x_prime, z)
-              - get_successor_states(model, x, u)
-
-        Returns
-        -------
-        b_prime : np.array
-            The updated normalized belief distribution (length=len(X)).
         """
 
         # b_prime accumulates unnormalized probabilities for each x'
@@ -60,26 +42,55 @@ class POMDPUtil:
                 p_obs = model["Z"][u].get_prob(x_prime, z)
                 if p_obs <= 0.0:
                     continue
-
                 # Contribution to next-belief mass for x_prime
                 contrib = b_x * t_p * p_obs
                 b_prime[x_prime] += contrib
                 norm += contrib
-
-        # If norm == 0, we have an impossible observation under (b,u)
         if norm == 0.0:
             raise ValueError(f"Observation z={z} has zero probability under (b,u).")
-
-        # Normalize
         b_prime /= norm
-
-        # Check numerically that sum of b_prime is ~1
         if not np.allclose(b_prime.sum(), 1.0, rtol=1e-6, atol=1e-9):
-            raise ValueError(
-                f"Resulting belief does not sum to 1 (sum={b_prime.sum():.6f})."
-            )
-
+            raise ValueError(f"Resulting belief does not sum to 1 (sum={b_prime.sum():.6f}).")
         return b_prime
+
+    @staticmethod
+    def to_sparse_dict(b):
+        """
+        Given a belief b as a list (or array) of length d,
+        return a dict {index: value} for all nonzero entries.
+        """
+        return {i: val for i, val in enumerate(b) if val != 0.0}
+
+    @staticmethod
+    def sparse_euclidean_distance(b_dict, x_dict):
+        """
+        Compute Euclidean distance between two sparse dicts:
+          b_dict = {index: value}, x_dict = {index: value}.
+        """
+        # union of indices
+        indices = set(b_dict.keys()).union(x_dict.keys())
+        ssum = 0.0
+        for k in indices:
+            diff = b_dict.get(k, 0.0) - x_dict.get(k, 0.0)
+            ssum += diff*diff
+        return math.sqrt(ssum)
+
+    @staticmethod
+    def nearest_neighbor_sparse(B_sparse, b_sparse):
+        """
+        Returns (best_b_dict, best_index) from B_sparse
+        that is nearest to b_sparse in Euclidean distance.
+        B_sparse[i] is a dict, b_sparse is a dict.
+        """
+        best_index = None
+        best_dist = float('inf')
+        for i, x_dict in enumerate(B_sparse):
+            dist = POMDPUtil.sparse_euclidean_distance(b_sparse, x_dict)
+            if dist < best_dist:
+                best_dist = dist
+                best_index = i
+        return B_sparse[best_index], best_index, best_dist
+
 
     @staticmethod
     def nearest_neighbor(B_n, b):
@@ -114,6 +125,57 @@ class POMDPUtil:
         return belief_points
 
     @staticmethod
+    def round_to_Bn(b, n):
+        """
+        Round the belief vector b (length S) into B_n, i.e. a vector b' = (k_1/n, ..., k_S/n)
+        summing to 1, with each k_i integer >= 0 and sum k_i = n.
+
+        Steps:
+        1) Scale up: w_i = n * b_i
+        2) floor_i = floor(w_i)
+        3) leftover = n - sum(floor_i)
+        4) Use the largest fractional parts to distribute leftover increments.
+        5) b'_i = floor_i[i]/n (plus an extra 1 for those leftover slots).
+        """
+        # Convert b to a list or array of floats
+        b_list = list(b)
+        S = len(b_list)
+
+        # 1) scale up
+        w = [x * n for x in b_list]
+
+        # 2) floor each w_i
+        floor_vals = [math.floor(x) for x in w]
+
+        # sum of floors
+        sum_floor = sum(floor_vals)
+
+        # leftover
+        leftover = n - sum_floor
+
+        # if leftover < 0, that means sum of floors was bigger than n
+        # (which can happen with rounding if b doesn't sum exactly to 1.0
+        # or due to floating errors). We handle that case by removing from
+        # the smallest fractional remainders, or you might prefer a different policy.
+        # For typical b summing to 1, leftover >= 0.
+
+        # 3) fractional parts
+        frac_parts = [(w[i] - floor_vals[i], i) for i in range(S)]
+        # sort descending by fractional part
+        frac_parts.sort(key=lambda x: x[0], reverse=True)
+
+        # 4) distribute leftover
+        for k in range(leftover):
+            # each step, pick the coordinate with the largest fractional remainder
+            i_coord = frac_parts[k][1]
+            floor_vals[i_coord] += 1
+
+        # 5) convert to final b' by dividing by n
+        b_rounded = [fv / n for fv in floor_vals]
+
+        return b_rounded
+
+    @staticmethod
     def b_0_n(b0, B_n):
         """
         Creates the initial  belief
@@ -125,19 +187,7 @@ class POMDPUtil:
         """
         Compute the expected cost for each (belief, action) pair,
         using a precomputation of per-state-action costs.
-
-        B_n: list of beliefs, each is something like a list of floats b[x] summing to 1
-        X:   list/range of states
-        U:   list/range of actions
-        model: includes model["R"] reward dictionary, and get_next_state_obs_pairs
-
-        Returns a 2D structure belief_C with shape [len(B_n)][len(U)]
-        such that belief_C[i][u] = E[cost(b_i,u)].
         """
-        # 1) Precompute cost_xu[u][x] = sum_{(xprime,z,p)} p * cost(u,x,xprime,z).
-        #    cost(u,x,xprime,z) = -R(u,x,xprime,z).  If not in model["R"], it's 0.
-        # We'll store in a 2D array or list of lists: cost_xu[u][x].
-
         num_actions = len(U)
         num_states = len(X)
         # We can store cost_xu as a 2D np array for speed
@@ -145,7 +195,7 @@ class POMDPUtil:
 
         # Precompute for each (u, x):
         for a_id, a in enumerate(U):
-            print(f"Precomputing cost {a_id}/{len(U)-1}")
+            print(f"Precomputing cost {a_id}/{len(U) - 1}")
             for x_id in X:
                 # We'll sum up p * (-reward)
                 total_cost = 0.0
@@ -269,7 +319,7 @@ class POMDPUtil:
         return new_particles
 
     @staticmethod
-    def policy_evaluation(L, mu, gamma, b0, model, X, N, B_n):
+    def policy_evaluation(L, mu, gamma, b0, model, X, N, B_n, annoy_index, b_to_index, n):
         """
         Monte-Carlo evaluation of a policy
         """
@@ -284,7 +334,12 @@ class POMDPUtil:
             for k in range(N):
                 # if tuple(b) not in B_n_prime:
                 #     B_n_prime.add(tuple(b))
-                b_idx = POMDPUtil.nearest_neighbor(B_n=B_n, b=b)[1]
+                # b_idx = POMDPUtil.nearest_neighbor(B_n=B_n, b=b)[1]
+                # b_idx = POMDPUtil.nearest_neighbor_annoy(b=b, annoy_index=annoy_index, b_to_index=None)
+                if tuple(b) in b_to_index:
+                    b_idx = b_to_index[tuple(b)]
+                else:
+                    b_idx = b_to_index[tuple(POMDPUtil.round_to_Bn(b=b, n=n))]
                 u = np.argmax(mu[b_idx])
                 x_prime, z = sample_next_state_and_obs(model, x, u)
                 r = 0
@@ -424,5 +479,63 @@ class POMDPUtil:
             beliefs.append(b.tolist())
         return beliefs
 
+    @staticmethod
+    def build_annoy_index(B_n, num_trees=10):
+        """
+        Build an Annoy approximate NN index for B_n,
+        each b in B_n is a list or array of length d.
+        """
+        d = len(B_n[0])
+        t = AnnoyIndex(d, metric='euclidean')  # or 'angular'
+        for i, b in enumerate(B_n):
+            t.add_item(i, b)
+        t.build(num_trees)
+        return t
+
+    @staticmethod
+    def nearest_neighbor_annoy(b, annoy_index, b_to_index):
+        """
+        Return (nearest_belief_index, distance).
+        """
+        if b_to_index is not None:
+            if tuple(b) in b_to_index:
+                return b_to_index[tuple(b)]
+        i_nn = annoy_index.get_nns_by_vector(b, n=1)[0]
+        return i_nn
+
+    @staticmethod
+    def one_hot_at_max(b):
+        """
+        Given a vector b (list or 1D np.array),
+        create a new vector b_hot of the same shape,
+        with b_hot[i] = 1 where i = argmax(b), and 0 elsewhere.
+        """
+        # If b is a list, convert to np.array temporarily (not strictly necessary).
+        b_array = np.array(b)
+        # Find index of maximum entry
+        max_index = np.argmax(b_array)
+        # Create a zero vector of same length
+        b_hot = np.zeros_like(b_array, dtype=float)
+        # Put a 1 in that position
+        b_hot[max_index] = 1.0
+        # Return as a list (or keep as np.array if you prefer)
+        return list(b_hot.tolist())
 
 
+    @staticmethod
+    def precompute_cost(U, X, model):
+        """
+        Precomputes costs used to calculate expected belief cost
+        """
+        cost_xu = np.zeros((len(U), len(X)), dtype=float)
+        for u in U:
+            print(f"Precomputing cost {u}/{len(U) - 1}")
+            for x_id in X:
+                total_cost = 0.0
+                nx_pairs = get_next_state_obs_pairs(model, x_id, u)
+                for (x_prime, z, p_xz) in nx_pairs:
+                    r = model["R"].get((u, x_id, x_prime, z), 0.0)
+                    cost_value = -r
+                    total_cost += p_xz * cost_value
+                cost_xu[u, x_id] = total_cost
+        return cost_xu
