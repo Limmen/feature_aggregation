@@ -1,6 +1,10 @@
 import pickle
 import numpy as np
 
+###############################################################################
+# 1. SparseRowT / SparseRowO Classes
+###############################################################################
+
 class SparseRowT:
     """
     Sparse or lazy representation for transitions: T[a][s][s_next].
@@ -197,14 +201,18 @@ class SparseRowO:
             return []
 
 
-################################################################################
-# 2. The POMDP Parser (pure data, no local closures)
-################################################################################
+###############################################################################
+# 2. The POMDP Parser (pure data, no local closures) with single-line T: a : s : s_next prob
+###############################################################################
 
 def parse_pomdp_data(filename):
     """
     Parse a .pomdp file into a dictionary-based model with numeric IDs for states/actions/obs,
     and a memory-efficient representation for T/O.
+    Also now handles single-line transitions of form:
+        T: <action> : <state> : <state_next> <prob>
+    for example:
+        T: amn : s020011 : s030011 1.000000
 
     The returned 'model' is purely data (no nested local functions), so it's picklable.
     """
@@ -254,7 +262,7 @@ def parse_pomdp_data(filename):
     with open(filename, 'r') as f:
         line_idx = 0
         for raw_line in f:
-            print(f"processing line {line_idx}")
+            print(f"Processing line {line_idx}")
             line_idx += 1
             line = strip_comment(raw_line)
             if not line:
@@ -278,8 +286,8 @@ def parse_pomdp_data(filename):
                     continue
                 else:
                     matrix_lines.append(line)
+                    # If we read #states lines, finalize
                     if len(matrix_lines) == num_states:
-                        # finalize T
                         a_id = action_index[current_action]
                         for s_id in range(num_states):
                             row_strs = matrix_lines[s_id].split()
@@ -323,7 +331,6 @@ def parse_pomdp_data(filename):
                 else:
                     matrix_lines.append(line)
                     if len(matrix_lines) == num_states:
-                        # finalize O
                         a_id = action_index[current_action]
                         for s_next in range(num_states):
                             row_strs = matrix_lines[s_next].split()
@@ -413,11 +420,14 @@ def parse_pomdp_data(filename):
                 # parse transitions
                 ensure_T_and_O_exist()
                 parts = split_colon(line)
+                # e.g. "T: amn : s020011 : s030011 1.000000"
+                # after removing 'T', we might have: ["amn", "s020011", "s030011 1.000000"]
                 parts = parts[1:]  # remove 'T'
                 if not parts:
                     raise ValueError("No action in T line.")
                 a_str = parts[0]
                 a_id = action_index[a_str]
+
                 if len(parts) == 1:
                     # means next lines => identity/uniform or matrix
                     parse_mode = 'T-matrix'
@@ -430,9 +440,38 @@ def parse_pomdp_data(filename):
                         T_structs[a_id].set_entire_uniform()
                     else:
                         raise ValueError("Unsupported T: a : ??? line.")
+                elif len(parts) == 3:
+                    # single-line definition: T: a : s_from : s_next prob
+                    s_from_str = parts[1]
+                    nextprob_str = parts[2].split()
+                    if len(nextprob_str) != 2:
+                        raise ValueError("Expected 's_next prob' in T line.")
+                    s_next_str, prob_str = nextprob_str
+                    prob_val = float(prob_str)
+
+                    # parse s_from
+                    if s_from_str in state_index:
+                        s_from_id = state_index[s_from_str]
+                    else:
+                        s_from_id = int(s_from_str)
+
+                    # parse s_next
+                    if s_next_str in state_index:
+                        s_next_id = state_index[s_next_str]
+                    else:
+                        s_next_id = int(s_next_str)
+
+                    # store in T_structs
+                    row = T_structs[a_id].explicit.get(s_from_id)
+                    if row is None:
+                        row = {}
+                        T_structs[a_id].set_sparse_entries(s_from_id, row)
+                    elif not isinstance(row, dict):
+                        # if the row was previously set as list or ("identity",) => conflict
+                        raise ValueError(f"Mixed T definitions for s_from={s_from_str} not supported.")
+                    row[s_next_id] = prob_val
                 else:
-                    # T: a : s : s_next prob  (not fully implemented for brevity)
-                    pass
+                    raise ValueError("Too many parts for T line. Only single s_next prob pair is implemented.")
 
             elif lower_line.startswith("o:"):
                 # parse observations
@@ -443,6 +482,7 @@ def parse_pomdp_data(filename):
                     raise ValueError("No action in O line.")
                 a_str = parts[0]
                 a_id = action_index[a_str]
+
                 if len(parts) == 1:
                     parse_mode = 'O-matrix'
                     current_action = a_str
@@ -454,9 +494,37 @@ def parse_pomdp_data(filename):
                         O_structs[a_id].set_entire_uniform()
                     else:
                         raise ValueError("Unsupported O short line.")
+                elif len(parts) == 3:
+                    # e.g. "O: a : s_next : obs prob"
+                    s_next_str = parts[1]
+                    obsprob_str = parts[2].split()
+                    if len(obsprob_str) != 2:
+                        raise ValueError("Expected 'obs prob' in O line.")
+                    obs_str, prob_str = obsprob_str
+                    prob_val = float(prob_str)
+
+                    # parse s_next
+                    if s_next_str in state_index:
+                        s_next_id = state_index[s_next_str]
+                    else:
+                        s_next_id = int(s_next_str)
+
+                    # parse obs
+                    if obs_str in obs_index:
+                        o_id = obs_index[obs_str]
+                    else:
+                        o_id = int(obs_str)
+
+                    # store in O_structs
+                    row = O_structs[a_id].explicit.get(s_next_id)
+                    if row is None:
+                        row = {}
+                        O_structs[a_id].set_sparse_entries(s_next_id, row)
+                    elif not isinstance(row, dict):
+                        raise ValueError(f"Mixed O definitions for s_next={s_next_str} not supported.")
+                    row[o_id] = prob_val
                 else:
-                    # O: a : s_next : obs prob
-                    pass
+                    raise ValueError("Too many parts for O line. Only single obs prob pair is implemented.")
 
             elif lower_line.startswith("r:"):
                 # parse rewards
@@ -584,7 +652,6 @@ def load_model(filename):
         model = pickle.load(f)
     return model
 
-
 def sample_next_state_and_obs(model, s_id, a_id):
     """
     From current state s_id and action a_id, sample:
@@ -613,65 +680,20 @@ def sample_next_state_and_obs(model, s_id, a_id):
 
     return (s_next, z)
 
+
 ################################################################################
 # 5. Example usage
 ################################################################################
 
 if __name__ == "__main__":
-    # Example usage with the "tiger" .pomdp file
-    parsed_model = parse_pomdp_data("tiger.pomdp")
+    # Example usage with "RockSample_4_4.pomdp" or "tiger.pomdp"
+    model = parse_pomdp_data("RockSample_4_4.pomdp")
 
-    # Save to disk
-    save_model(parsed_model, "tiger_model.pkl")
+    # Suppose we want to look at T: amn : s020011 : s030011 1.000000
+    # Then check successors for (s_id="s020011", a_id="amn")
+    s_id = model["state_index"]["s020011"]
+    a_id = model["action_index"]["amn"]
 
-    # Load back
-    loaded_model = load_model("tiger_model.pkl")
-
-    # Suppose we want to get successors from state "tiger-left" under action "listen"
-    s_id = loaded_model["state_index"]["tiger-left"]
-    a_id = loaded_model["action_index"]["listen"]
-    successors = get_successor_states(loaded_model, s_id, a_id)
-    print("Successor states for (s='tiger-left', a='listen'):", successors)
-
-    # Or get the (s_next, obs) pairs with joint probability
-    sn_obs = get_next_state_obs_pairs(loaded_model, s_id, a_id)
-    print("Next-state & obs pairs (s_next, obs, prob):", sn_obs)
-
-
-# if __name__ == '__main__':
-#     model = parse_pomdp_with_joint_successors("tiger.pomdp")
-#     save_model(model, "tiger.pkl")
-#     # print(model)
-#     # print(model["states"])
-#     # print(model["actions"])
-#     # print(model["observations"])
-#     # print(model["state_index"])
-#     # print(model["action_index"])
-#     # print(model["obs_index"])
-#     # print(model["start"])
-#     # print(model["discount"])
-#     # print(model["values"])
-#     # print(model["T"])
-#     # print(model["Z"])
-#     s_id = model["state_index"][model["states"][0]]
-#     a_id = model["action_index"][model["actions"][0]]
-#     o_id = model["obs_index"][model["observations"][0]]
-#
-#     # Then get all next states with nonzero prob:
-#     pairs = model["get_next_state_obs_pairs"](s_id, a_id)
-#     print(len(pairs), "pairs")
-#     # pairs is a list of (s_next_id, obs_id, probability).
-#
-#     for (sn, o, p) in pairs:
-#         print(" s -> s_next,obs => prob = ", s_id, "->", (sn, o), "=", p)
-#         s_name = model["states"][s_id]
-#         a_name = model["actions"][a_id]
-#         s_next_name = model["states"][sn]
-#         o_name = model["observations"][o]
-#         print(model["R"])
-#         r = 0
-#         if (a_id, s_id, sn, o) in model["R"]:
-#             r = model["R"][(a_id, s_id, sn, o)]
-#         print("Reward for", s_name, a_name, s_next_name, o_name, "is", r)
-#         print("Transition for", s_name, a_name, s_next_name, "is", model["T"][a_id].get_prob(s_id, sn))
-#         print("Observation for", s_name, a_name, s_next_name, "is", model["Z"][a_id].get_prob(sn, o_id))
+    succ = get_successor_states(model, s_id, a_id)
+    print("Successor states from s020011 under amn =>", succ)
+    print(model["states"][51])

@@ -2,8 +2,10 @@ import random
 import math
 import numpy as np
 import itertools
+from collections import deque
 from large_pomdp_parser import get_next_state_obs_pairs, get_successor_states, sample_next_state_and_obs
 from collections import defaultdict
+from scipy.stats import qmc
 
 
 class POMDPUtil:
@@ -108,7 +110,7 @@ class POMDPUtil:
         for i, k in enumerate(generate_compositions(n, len(X))):
             belief = [k_i / n for k_i in k]
             belief_points.append(belief)
-            print(f"Processing belief {i + 1}/{total_combinations}: {belief}")
+            print(f"Processing belief {i + 1}/{total_combinations}")
         return belief_points
 
     @staticmethod
@@ -143,6 +145,7 @@ class POMDPUtil:
 
         # Precompute for each (u, x):
         for a_id, a in enumerate(U):
+            print(f"Precomputing cost {a_id}/{len(U)-1}")
             for x_id in X:
                 # We'll sum up p * (-reward)
                 total_cost = 0.0
@@ -159,6 +162,7 @@ class POMDPUtil:
         belief_C = np.zeros((len(B_n), num_actions), dtype=float)
 
         for i, b in enumerate(B_n):
+            print(f"Processing belief {i}/{len(B_n) - 1}")
             # b is presumably a list or array of length len(X)
             # We'll do for each action
             #   cost = sum_{x} b[x] * cost_xu[a_id, x]
@@ -217,6 +221,7 @@ class POMDPUtil:
 
         for a_id, a in enumerate(U):
             for i, b1 in enumerate(B_n):
+                print(f"Processing action {a_id}/{len(U) - 1}, belief {i}/{len(B_n) - 1}")
                 # We'll accumulate probabilities in a dictionary { j : prob }
                 # where j is an index of B_n
                 next_belief_prob = defaultdict(float)
@@ -269,25 +274,155 @@ class POMDPUtil:
         Monte-Carlo evaluation of a policy
         """
         costs = []
+        avg_cost = 0.0
+        # B_n_prime = set([tuple(b) for b in B_n])
         for l in range(L):
-            print(f"Policy evaluation iteration: {l}/{L}")
+            print(f"Policy evaluation iteration: {l}/{L}, avg cost: {avg_cost}")
             x = np.random.choice(X, p=b0)
-            print(x)
             b = b0
             Cost = 0
             for k in range(N):
+                # if tuple(b) not in B_n_prime:
+                #     B_n_prime.add(tuple(b))
                 b_idx = POMDPUtil.nearest_neighbor(B_n=B_n, b=b)[1]
                 u = np.argmax(mu[b_idx])
                 x_prime, z = sample_next_state_and_obs(model, x, u)
-                print(f"z: {z}")
                 r = 0
                 if (u, x, x_prime, z) in model["R"]:
                     r = model["R"][(u, x, x_prime, z)]
                 Cost += math.pow(gamma, k) * -r
-                print(b)
-                print(x)
-                print(f"{b[x]}, {z}")
                 b = POMDPUtil.belief_operator(z=z, u=u, b=b, X=X, model=model)
                 x = x_prime
             costs.append(Cost)
-        return np.mean(costs)
+            avg_cost = np.mean(costs)
+            # np.savez("B_n.npz", B_n=np.array([list(b) for b in B_n_prime]))
+        return avg_cost
+
+    @staticmethod
+    def enumerate_reachable_beliefs(model, b0, U, X, T):
+        """
+        Enumerate all beliefs reachable from the initial belief b0
+        (a list of length len(X)) within T steps, under *all possible* actions
+        and observations.
+
+        Parameters
+        ----------
+        model : dict
+            The parsed POMDP model, containing "T", "Z", "R", etc.
+            We assume we have a function 'belief_operator(z, u, b, X, model)'
+            that returns b' = tau(b,u,z).
+        b0 : list[float]
+            The initial belief distribution over X.  sum(b0) = 1.
+        X : list or range
+            The state indices (0..S-1).
+        U : list or range
+            The action indices (0..A-1).
+        T : int
+            The maximum number of steps to expand forward.
+
+        Returns
+        -------
+        reachable : list of (b, t)
+            All (belief, time) pairs that are reachable.
+            If you only want the beliefs (not time), you can store them in a set.
+
+        Notes
+        -----
+        - The branching factor can be huge: #actions * possible #observations.
+        - For T=100, this can blow up exponentially in many POMDPs.
+          So in large domains, enumerating all reachable beliefs is usually infeasible.
+        - You might consider a partial or approximate approach (see suggestions below).
+        """
+        # We'll store reachable beliefs in a BFS manner:
+        # queue holds (b, t)
+        queue = deque()
+        # Use a set to store visited (b, t) or just b if you only care about
+        # unique beliefs ignoring time dimension.
+        visited = set()
+
+        b0_t = tuple(b0)  # so it's hashable
+        queue.append((b0_t, 0))
+        visited.add((b0_t, 0))
+
+        reachable = []  # or we can store them in a set
+        reachable.append((b0_t, 0))
+
+        while queue:
+            (b_current, t) = queue.popleft()
+            if t >= T:
+                # we've reached the time horizon
+                continue
+
+            # For each action a
+            for a_id in U:
+                # For each possible observation z
+                # We can figure out which obs are possible, but in worst case,
+                # we iterate over all obs in model["observations"] => range(num_obs)
+                num_obs = len(model["observations"])
+                for z_id in range(num_obs):
+                    try:
+                        b_next = tuple(POMDPUtil.belief_operator(z=z_id, u=a_id, b=b_current, X=X, model=model))
+                    except:
+                        continue
+                    # add (b_next, t+1) if not visited
+                    if (b_next, t + 1) not in visited:
+                        visited.add((b_next, t + 1))
+                        queue.append((b_next, t + 1))
+                        reachable.append((b_next, t + 1))
+        return reachable
+
+    @staticmethod
+    def sample_beliefs_halton(num_beliefs, num_states):
+        """
+        Sample 'num_beliefs' beliefs in an S-dimensional simplex
+        using a Halton sequence in dimension (S-1).
+        """
+        dim = num_states - 1
+        # Construct a Halton sampler for dimension = S-1
+        sampler = qmc.Halton(d=dim, scramble=False)
+        points = sampler.random(n=num_beliefs)  # shape=(num_beliefs, dim)
+
+        # Now convert each row in 'points' to a belief distribution
+        # We can interpret them as "S-1 cut points" in [0,1].
+        beliefs = []
+        for row in points:
+            sorted_cuts = np.sort(row)
+            # e.g. if sorted_cuts=[0.2, 0.7] in the case of 3 states,
+            # the intervals are [0,0.2],(0.2,0.7],(0.7,1], so belief=[0.2,0.5,0.3].
+            cuts_full = np.concatenate(([0.0], sorted_cuts, [1.0]))
+            diffs = np.diff(cuts_full)
+            beliefs.append(diffs.tolist())
+
+        return beliefs
+
+    @staticmethod
+    def sample_beliefs_dirichlet(num_beliefs, num_states, alpha=1.0):
+        """
+        Sample 'num_beliefs' random beliefs in an S-dimensional simplex,
+        by sampling from a Dirichlet(alpha,...,alpha) distribution.
+
+        alpha : float or list of length 'num_states'
+            If alpha is a scalar, we use Dirichlet(alpha,...,alpha).
+            If alpha is a list, we do Dirichlet(alpha_i,...).
+
+        Returns
+        -------
+        beliefs : list of lists
+            Each belief is a length-num_states list summing to 1.
+        """
+        # If alpha is a scalar, replicate it
+        if isinstance(alpha, (int, float)):
+            alpha_vec = np.full(num_states, alpha)
+        else:
+            alpha_vec = np.array(alpha)
+            assert len(alpha_vec) == num_states
+
+        beliefs = []
+        for _ in range(num_beliefs):
+            b = np.random.gamma(shape=alpha_vec, scale=1.0)
+            b /= b.sum()  # normalize
+            beliefs.append(b.tolist())
+        return beliefs
+
+
+

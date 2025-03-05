@@ -24,6 +24,6 @@ if __name__ == '__main__':
     start = time.time()
     mu, J = VI.vi(P=P_b, epsilon=epsilon, gamma=gamma, C=C_b, X=B_n_indices, U=U, verbose=False)
     end = time.time()
-    avg_cost = POMDPUtil.policy_evaluation(L=10000, mu=mu, gamma=gamma, b0=b_0_n, model=model, X=X, N=100, B_n=B_n, O=O)
+    avg_cost = POMDPUtil.policy_evaluation(L=10000, mu=mu, gamma=gamma, b0=b_0_n, model=model, X=X, N=100, B_n=B_n)
     print(avg_cost)
     print(end-start)
