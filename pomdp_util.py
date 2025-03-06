@@ -7,6 +7,7 @@ from large_pomdp_parser import get_next_state_obs_pairs, get_successor_states, s
 from collections import defaultdict
 from scipy.stats import qmc
 from annoy import AnnoyIndex
+from rocksample_feature_parser import build_coarsened_state_id
 
 
 class POMDPUtil:
@@ -72,7 +73,7 @@ class POMDPUtil:
         ssum = 0.0
         for k in indices:
             diff = b_dict.get(k, 0.0) - x_dict.get(k, 0.0)
-            ssum += diff*diff
+            ssum += diff * diff
         return math.sqrt(ssum)
 
     @staticmethod
@@ -90,7 +91,6 @@ class POMDPUtil:
                 best_dist = dist
                 best_index = i
         return B_sparse[best_index], best_index, best_dist
-
 
     @staticmethod
     def nearest_neighbor(B_n, b):
@@ -327,7 +327,7 @@ class POMDPUtil:
         avg_cost = 0.0
         # B_n_prime = set([tuple(b) for b in B_n])
         for l in range(L):
-            print(f"Policy evaluation iteration: {l}/{L}, avg cost: {avg_cost}")
+            # print(f"Policy evaluation iteration: {l}/{L}, avg cost: {avg_cost}")
             x = np.random.choice(X, p=b0)
             b = b0
             Cost = 0
@@ -521,7 +521,6 @@ class POMDPUtil:
         # Return as a list (or keep as np.array if you prefer)
         return list(b_hot.tolist())
 
-
     @staticmethod
     def precompute_cost(U, X, model):
         """
@@ -539,3 +538,116 @@ class POMDPUtil:
                     total_cost += p_xz * cost_value
                 cost_xu[u, x_id] = total_cost
         return cost_xu
+
+    @staticmethod
+    def belief_to_feature_belief(b, feature_model, model, n=4, x_res=2, y_res=2):
+        """
+        Convert a belief distribution 'b' over the original model's states
+        into a distribution over the feature_model's coarsened states.
+
+        Parameters
+        ----------
+        b : list[float]
+            A distribution over the 'model["states"]' (same length as model["states"]).
+        feature_model : dict
+            The coarsened model dictionary (with 'states', 'state_index', etc.).
+        model : dict
+            The original model dictionary (also with 'states', etc.).
+        n : int
+            The grid dimension (0..n-1).
+        x_res, y_res : int
+            The coarsening resolution.
+
+        Returns
+        -------
+        f_b : list[float]
+            A distribution over 'feature_model["states"]' (same length as that states list).
+        """
+        from_feature_index = feature_model["state_index"]
+        feature_states = feature_model["states"]
+        orig_states = model["states"]
+
+        # Initialize the coarsened belief to 0
+        f_b = [0.0] * len(feature_states)
+
+        # Single pass: for each original state j with probability b[j],
+        # find its coarsened state c_id and accumulate.
+        for j, p_j in enumerate(b):
+            if p_j == 0.0:
+                continue
+
+            orig_state_id = orig_states[j]
+            # Build the coarsened ID for that original state:
+            c_id = build_coarsened_state_id(orig_state_id, n, x_res, y_res)
+            c_idx = from_feature_index[c_id]
+            f_b[c_idx] += p_j
+
+        return f_b
+
+
+    @staticmethod
+    def feature_policy_evaluation(L, mu, gamma, b0, model, X, N, B_n, annoy_index, b_to_index, n, feature_model,
+                                  n_grid, x_res, y_res):
+        """
+        Monte-Carlo evaluation of a policy
+        """
+        costs = []
+        avg_cost = 0.0
+        # B_n_prime = set([tuple(b) for b in B_n])
+        for l in range(L):
+            print(f"Policy evaluation iteration: {l}/{L}, avg cost: {avg_cost}")
+            x = np.random.choice(X, p=b0)
+            b = b0
+            Cost = 0
+            for k in range(N):
+                # if tuple(b) not in B_n_prime:
+                #     B_n_prime.add(tuple(b))
+                # b_idx = POMDPUtil.nearest_neighbor(B_n=B_n, b=b)[1]
+                # b_idx = POMDPUtil.nearest_neighbor_annoy(b=b, annoy_index=annoy_index, b_to_index=None)
+                f_b = POMDPUtil.belief_to_feature_belief(b=b, feature_model=feature_model, model=model, n=n_grid,
+                                                         x_res=x_res, y_res=y_res)
+                if tuple(f_b) in b_to_index:
+                    b_idx = b_to_index[tuple(f_b)]
+                else:
+                    b_idx = b_to_index[tuple(POMDPUtil.round_to_Bn(b=f_b, n=n))]
+                u = np.argmax(mu[b_idx])
+                x_prime, z = sample_next_state_and_obs(model, x, u)
+                r = 0
+                if (u, x, x_prime, z) in model["R"]:
+                    r = model["R"][(u, x, x_prime, z)]
+                Cost += math.pow(gamma, k) * -r
+                b = POMDPUtil.belief_operator(z=z, u=u, b=b, X=X, model=model)
+                x = x_prime
+            costs.append(Cost)
+            avg_cost = np.mean(costs)
+            # np.savez("B_n.npz", B_n=np.array([list(b) for b in B_n_prime]))
+        return avg_cost
+
+    @staticmethod
+    def policy_evaluation_simulator(L, mu, gamma, model, X, N, b_to_index, n):
+        """
+        Monte-Carlo evaluation of a policy
+        """
+        from rocksample_simulator import RockSampleSimulator
+        env = RockSampleSimulator(n=4, k=4, seed=999)
+        costs = []
+        avg_cost = 0.0
+        for l in range(L):
+            print(f"Policy evaluation iteration: {l}/{L}, avg cost: {avg_cost}")
+            x = env.init_state()
+            b = env.initial_belief()
+            Cost = 0
+            for k in range(N):
+                if tuple(b) in b_to_index:
+                    b_idx = b_to_index[tuple(b)]
+                else:
+                    b_idx = b_to_index[tuple(POMDPUtil.round_to_Bn(b=b, n=n))]
+                u = np.argmax(mu[b_idx])
+                x_prime, z, r, done = env.step(state_id=x, action_id=u)
+                # x_prime, z = sample_next_state_and_obs(model, x, u)
+                Cost += math.pow(gamma, k) * -r
+                b = POMDPUtil.belief_operator(z=z, u=u, b=b, X=X, model=model)
+                x = x_prime
+            costs.append(Cost)
+            avg_cost = np.mean(costs)
+        return avg_cost

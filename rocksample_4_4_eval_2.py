@@ -10,7 +10,7 @@ import numpy as np
 if __name__ == '__main__':
     model = load_model("rocksample_4_4.pkl")
     gamma = 0.95
-    n = 3
+    n = 2
     epsilon = 0.001
     X = list(model["state_index"].values())
     U = list(model["action_index"].values())
@@ -30,6 +30,9 @@ if __name__ == '__main__':
             B_n[i] = b
         b_to_index[b] = i
     cost_xu = POMDPUtil.precompute_cost(U=U, X=X, model=model)
+    # print(cost_xu[4])
+    # import sys
+    # sys.exit(0)
     start = time.time()
     mu, J = vi(B_n=B_n, U=U, gamma=gamma, epsilon=epsilon, verbose=True, model=model, cost_xu=cost_xu,
                annoy_index=annoy_index, b_to_index=b_to_index, n=n)
