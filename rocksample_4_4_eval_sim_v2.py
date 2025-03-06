@@ -4,26 +4,25 @@ from vi_5 import vi
 import time
 
 if __name__ == '__main__':
-    env = RockSampleSimulator(n=10, k=10, seed=999)
+    env = RockSampleSimulator(n=4, k=4, seed=999)
     gamma = 0.95
-    n = 1
+    n = 3
     epsilon = 0.001
     X = list(range(env.num_states))
     U = list(range(env.num_actions))
     O = list(range(env.num_observations))
     b0 = env.initial_belief()
-    B_n = POMDPUtil.B_n_2(n=n, X=X, sample_size=10)
+    B_n = POMDPUtil.B_n(n=n, X=X)
+    # B_n = POMDPUtil.sample_beliefs_halton(num_beliefs=100, num_states=len(X))
     b_0_n = POMDPUtil.b_0_n(b0=b0, B_n=B_n)
     B_n_indices = [i for i in range(len(B_n))]
     b_0_n_idx = B_n.index(b_0_n)
     b_to_index = {}
-    print("Creating b_to_index")
     for i, b in enumerate(B_n):
         if not isinstance(b, tuple):
             b = tuple(b)
             B_n[i] = b
         b_to_index[b] = i
-    print("Creating cost_xu")
     cost_xu = env.precompute_cost()
     # print(cost_xu[6])
     # import sys

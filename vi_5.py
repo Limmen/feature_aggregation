@@ -1,4 +1,6 @@
 import numpy as np
+import pickle
+import os
 from rocksample_simulator import RockSampleSimulator
 from pomdp_util import POMDPUtil
 
@@ -25,7 +27,7 @@ def compute_next_belief_distribution(b, u, env: RockSampleSimulator, b_to_index,
             continue
         nx_pairs = env.next_state_obs_distribution(x_id, u)
         for (x_prime, z, p_xz) in nx_pairs:
-            b_next = env.belief_operator_pf(z_id=z, a_id=u, b=b, num_particles=50)
+            b_next = env.belief_operator_pf(z_id=z, a_id=u, b_agg=b, num_particles=50)
             if tuple(b_next) in b_to_index:
                 j = b_to_index[tuple(b_next)]
             else:
@@ -44,12 +46,19 @@ def vi(B_n, U, env, gamma, cost_xu, b_to_index, n, epsilon=1e-5, verbose=False):
     J = np.zeros(len(B_n), dtype=float)
     iteration = 0
 
-    successors_dict = {}
-    for i, b in enumerate(B_n):
-        successors_dict[i] = {}
-        for u in U:
-            print(f"{i}/{len(B_n)}, {u}/{len(U)}")
-            successors_dict[i][u] = compute_next_belief_distribution(b=b, u=u, env=env, b_to_index=b_to_index, n=n)
+    if os.path.exists("successors.pkl"):
+        with open("successors.pkl", "rb") as f:
+            successors_dict = pickle.load(f)
+    else:
+        successors_dict = {}
+        for i, b in enumerate(B_n):
+            successors_dict[i] = {}
+            for u in U:
+                print(f"{i}/{len(B_n)}, {u}/{len(U)}")
+                successors_dict[i][u] = compute_next_belief_distribution(
+                    b=b, u=u, env=env, b_to_index=b_to_index, n=n)
+        with open("successors.pkl", "wb") as f:
+            pickle.dump(successors_dict, f)
 
     while True:
         delta = 0.0
@@ -72,9 +81,12 @@ def vi(B_n, U, env, gamma, cost_xu, b_to_index, n, epsilon=1e-5, verbose=False):
             J[i] = new_val
         if verbose:
             mu = create_policy(B_n, U, successors_dict, cost_xu, J, gamma)
-            avg_cost = env.policy_evaluation(L=100, mu=mu, b0=env.initial_belief(), N=100,
-                                             b_to_index=b_to_index, n=n, gamma=gamma, use_pf=True)
-            print(f"Iteration {iteration}, delta={delta:.6g}, epsilon={epsilon}, cost: {avg_cost}")
+            # print("policy evaluation")
+            avg_cost = env.policy_evaluation(L=2, mu=mu, N=100,
+                                             b_agg_to_index=b_to_index, n=n, gamma=gamma, use_pf=True)
+            # print(f"Iteration {iteration}, delta={delta:.6g}, epsilon={epsilon}, cost: {avg_cost}")
+            print(f"{iteration}, delta={delta:.6g}")
+
         if delta < epsilon:
             break
 

@@ -1,18 +1,23 @@
 from pomdp_util import POMDPUtil
-from rocksample_simulator import RockSampleSimulator
+from rocksample_aggregate_simulator import RockSampleSimulator, AggregateRockSampleSimulator
 from vi_5 import vi
 import time
 
 if __name__ == '__main__':
-    env = RockSampleSimulator(n=10, k=10, seed=999)
+    base_env = RockSampleSimulator(n=10, k=10, seed=999)
+    env = AggregateRockSampleSimulator(base_simulator=base_env, grid_resolution=20)
+    # print(env.num_agg_states)
+    # import sys
+    # sys.exit()
     gamma = 0.95
     n = 1
     epsilon = 0.001
-    X = list(range(env.num_states))
+    X = list(range(env.num_agg_states))
     U = list(range(env.num_actions))
     O = list(range(env.num_observations))
     b0 = env.initial_belief()
-    B_n = POMDPUtil.B_n_2(n=n, X=X, sample_size=10)
+    # B_n = POMDPUtil.B_n_2(n=n, X=X, sample_size=10)
+    B_n = POMDPUtil.B_n(n=n, X=X)
     b_0_n = POMDPUtil.b_0_n(b0=b0, B_n=B_n)
     B_n_indices = [i for i in range(len(B_n))]
     b_0_n_idx = B_n.index(b_0_n)

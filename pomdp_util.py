@@ -102,6 +102,53 @@ class POMDPUtil:
         return B_n[nearest_index], nearest_index
 
     @staticmethod
+    def random_composition(n, k):
+        """
+        Returns ONE random weak composition of n into k parts,
+        chosen uniformly among all C(n + k - 1, k - 1) possibilities.
+
+        The result is a list of length k whose sum is n.
+        """
+        if k == 1:
+            return [n]
+        # Choose k-1 distinct bar-positions in [1, 2, ..., n+k-1]:
+        bars = random.sample(range(1, n + k), k - 1)
+        bars.sort()
+
+        composition = []
+        prev = 0
+        for b in bars:
+            composition.append(b - prev - 1)
+            prev = b
+        # Last segment goes until (n + k - 1):
+        composition.append((n + k - 1) - prev)
+        return composition
+
+    @staticmethod
+    def B_n_2(n, X, sample_size=100, seed=None):
+        """
+        Randomly samples 'sample_size' belief points from the uniform
+        distribution over all compositions of n into len(X) parts,
+        then normalizes each into a probability vector.
+
+        n           : Resolution
+        X           : List of states (length = k)
+        sample_size : How many belief points to sample
+        seed        : Optional, for reproducibility
+        """
+        if seed is not None:
+            random.seed(seed)
+
+        k = len(X)
+        beliefs = []
+        for _ in range(sample_size):
+            comp = POMDPUtil.random_composition(n, k)
+            # Convert the composition into a probability distribution
+            belief = [c_i / n for c_i in comp]
+            beliefs.append(belief)
+        return beliefs
+
+    @staticmethod
     def B_n(n, X):
         """
         Creates the aggregate belief space B_n, where n is the resolution.

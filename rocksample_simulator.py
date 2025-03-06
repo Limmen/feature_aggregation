@@ -599,7 +599,7 @@ class RockSampleSimulator:
     # ----------------------------
     # A basic policy evaluation
     # ----------------------------
-    def policy_evaluation(self, L, mu, gamma, b0, N, b_to_index=None, n=4, use_pf = False):
+    def policy_evaluation(self, L, mu, gamma, b0, N, B_n = None, b_to_index=None, n=4, use_pf = False):
         """
         Example function that simulates a policy mu for L episodes,
         each up to N steps, starting from belief b0.
@@ -619,7 +619,7 @@ class RockSampleSimulator:
                 if tuple(b) in b_to_index:
                     b_idx = b_to_index[tuple(b)]
                 else:
-                    # If not found, maybe round the belief to some discrete grid
+                    # b_idx = POMDPUtil.nearest_neighbor(B_n=B_n, b=b)[1]
                     b_rounded = POMDPUtil.round_to_Bn(b, n=n)
                     b_idx = b_to_index[tuple(b_rounded)]
 

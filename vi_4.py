@@ -74,7 +74,8 @@ def vi(B_n, U, env, gamma, cost_xu, b_to_index, n, epsilon=1e-5, verbose=False):
             mu = create_policy(B_n, U, successors_dict, cost_xu, J, gamma)
             avg_cost = env.policy_evaluation(L=100, mu=mu, b0=env.initial_belief(), N=100,
                                              b_to_index=b_to_index, n=n, gamma=gamma)
-            print(f"Iteration {iteration}, delta={delta:.6g}, epsilon={epsilon}, cost: {avg_cost}")
+            # print(f"Iteration {iteration}, delta={delta:.6g}, epsilon={epsilon}, cost: {avg_cost}")
+            print(f"{iteration} {delta:.6g}")
         if delta < epsilon:
             break
 

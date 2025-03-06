@@ -8,9 +8,9 @@ from large_pomdp_parser import load_model
 import numpy as np
 
 if __name__ == '__main__':
-    model = load_model("rocksample_4_4.pkl")
+    model = load_model("rocksample_7_8.pkl")
     gamma = 0.95
-    n = 2
+    n = 1
     epsilon = 0.001
     X = list(model["state_index"].values())
     U = list(model["action_index"].values())
@@ -19,6 +19,9 @@ if __name__ == '__main__':
     # reachable_beliefs = POMDPUtil.enumerate_reachable_beliefs(model=model, b0=b0, X=X, U=U, T=3)
     # print(len(reachable_beliefs))
     B_n = POMDPUtil.B_n(n=n, X=X)
+    print(len(B_n))
+    import sys
+    sys.exit(0)
     # B_n = POMDPUtil.sample_beliefs_halton(num_beliefs=20, num_states=len(X))
     # len(B_n)
     # annoy_index = POMDPUtil.build_annoy_index(B_n=B_n, num_trees=5)
